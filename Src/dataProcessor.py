@@ -6,11 +6,11 @@
 
 import os
 import sqlite3
-import sys
+from ast import Continue
 from datetime import datetime
 from typing import List, Tuple
 
-from util import FramePacket
+from util import ActionType, FramePacket
 from util.action_receiver import ActionReceiver
 from util.shear_position_receiver import ShearPositionReceiver
 
@@ -31,6 +31,72 @@ class DataProcessor:
         # 初始化接收器
         self.action_receiver = ActionReceiver()
         self.shear_position_receiver = ShearPositionReceiver()
+
+        # 用于存储上一帧信息（按 src_no 分组）
+        # {src_no: (dt, parsed_result)}
+        self.last_frames = {}
+
+        # 用于存储 b_cmd==0 帧的上一帧数据（按 src_no 分组）
+        # {src_no: last_datas}
+        self.last_shear_datas = {}
+
+    def _is_duplicate_frame(
+        self, current_dt: datetime, current_src_no: int, current_data: dict
+    ) -> bool:
+        """
+        判断当前帧是否为重复帧
+
+        规则：5秒内同一个 src_no 的相同数据帧只保留第一次出现的
+
+        Args:
+            current_dt: 当前帧时间
+            current_src_no: 当前帧源地址
+            current_data: 当前帧解析数据
+
+        Returns:
+            True 如果是重复帧（与同一 src_no 的前一帧相同且时间差<5秒），False 否则
+        """
+        # 检查该 src_no 是否有历史记录
+        if current_src_no not in self.last_frames:
+            return False
+
+        last_dt, last_data = self.last_frames[current_src_no]
+
+        # 判断 data 是否相同
+        if current_data == last_data:
+            # 计算时间差
+            time_diff = (current_dt - last_dt).total_seconds()
+            if time_diff < 5.0:  # 5秒以内
+                return True
+
+        return False
+
+    def _is_duplicate_shear_data(
+        self, current_src_no: int, current_datas: bytes
+    ) -> bool:
+        """
+        判断煤机位置帧数据是否与上一帧相同
+
+        规则：不论时间间隔多久，只要 frame.datas 相同就滤除
+
+        Args:
+            current_src_no: 当前帧源地址
+            current_datas: 当前帧的数据载荷 (frame.datas)
+
+        Returns:
+            True 如果与上一帧数据相同，False 否则
+        """
+        # 检查该 src_no 是否有历史数据
+        if current_src_no not in self.last_shear_datas:
+            return False
+
+        last_datas = self.last_shear_datas[current_src_no]
+
+        # 判断 datas 是否相同
+        if current_datas == last_datas:
+            return True
+
+        return False
 
     def process_data_in_batches(self) -> List[Tuple[datetime, int, dict]]:
         """
@@ -109,14 +175,31 @@ class DataProcessor:
                     # 使用ActionReceiver解析
                     parsed_result = self.action_receiver.process_packet(frame)
                     if parsed_result:  # 如果解析成功
-                        filtered_batch.append((dt, frame.src_no, parsed_result))
+                        # print(parsed_result["frame_type"])
+                        if parsed_result["data"]["actionType"] != ActionType.无动作:
+                            # 检查是否为重复帧
+                            if not self._is_duplicate_frame(
+                                dt, frame.src_no, parsed_result["data"]
+                            ):
+                                filtered_batch.append((dt, frame.src_no, parsed_result))
+                                # 更新该 src_no 的最新帧信息
+                                self.last_frames[frame.src_no] = (
+                                    dt,
+                                    parsed_result["data"],
+                                )
 
                 # 检查条件：b_pri == 3 且 b_cmd == 0 (煤机位置)
                 elif frame.b_pri == 3 and frame.b_cmd == 0:
-                    # 使用ShearPositionReceiver解析
-                    parsed_result = self.shear_position_receiver.process_packet(frame)
-                    if parsed_result:  # 如果解析成功
-                        filtered_batch.append((dt, frame.src_no, parsed_result))
+                    # 检查是否与上一帧数据相同
+                    if not self._is_duplicate_shear_data(frame.src_no, frame.datas):
+                        # 使用ShearPositionReceiver解析
+                        parsed_result = self.shear_position_receiver.process_packet(
+                            frame
+                        )
+                        if parsed_result:  # 如果解析成功
+                            filtered_batch.append((dt, frame.src_no, parsed_result))
+                            # 更新该 src_no 的最新数据
+                            self.last_shear_datas[frame.src_no] = frame.datas
 
             except Exception:
                 # 跳过解析失败的记录
