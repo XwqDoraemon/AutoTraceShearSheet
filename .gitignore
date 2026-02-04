@@ -11,3 +11,21 @@
 !*.txt
 !*.py
 !*.json
+!*.js
+!*.ts
+!*.vue
+!*.html
+!*.css
+!*.scss
+!*.less
+!*.md
+
+# 忽略 node_models 文件夹
+*/node_models/
+*/output/
+
+# 忽略 dashboard/public 文件夹
+dashboard/public/
+
+# 忽略 dashboard/frontend/node_modules 文件夹
+dashboard/frontend/node_modules/

@@ -10,6 +10,7 @@ from ast import Continue
 from datetime import datetime
 from typing import List, Tuple
 
+# from typing_extensions import ParamSpecArgs
 from util import ActionType, FramePacket
 from util.action_receiver import ActionReceiver
 from util.shear_position_receiver import ShearPositionReceiver
@@ -148,6 +149,17 @@ class DataProcessor:
 
         finally:
             conn.close()
+
+    def get_data_for_tsfresh(self) -> List[Tuple[datetime, int, dict]]:
+        """
+        获取用于 tsfresh 特征提取的数据
+
+        这是 process_data_in_batches() 的别名方法，提供更清晰的语义
+
+        Returns:
+            符合条件的数据列表 [(时间, src_no, 解析结果), ...]
+        """
+        return self.process_data_in_batches()
 
     def _process_batch(
         self, batch_data: List[Tuple]
