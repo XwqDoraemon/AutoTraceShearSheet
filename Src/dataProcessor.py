@@ -13,6 +13,7 @@ from typing import List, Tuple
 # from typing_extensions import ParamSpecArgs
 from util import ActionType, FramePacket
 from util.action_receiver import ActionReceiver
+from util.sensor_receiver import SensorReceiver
 from util.shear_position_receiver import ShearPositionReceiver
 
 
@@ -32,6 +33,7 @@ class DataProcessor:
         # 初始化接收器
         self.action_receiver = ActionReceiver()
         self.shear_position_receiver = ShearPositionReceiver()
+        self.sen_receiver = SensorReceiver()
 
         # 用于存储上一帧信息（按 src_no 分组）
         # {src_no: (dt, parsed_result)}
@@ -173,14 +175,13 @@ class DataProcessor:
             符合条件的数据列表 [(时间, src_no, 解析结果), ...]
         """
         filtered_batch = []
-
         for date_time_str, buffer_data in batch_data:
             try:
                 # 解析时间
                 dt = datetime.strptime(date_time_str, "%Y-%m-%d %H:%M:%S.%f")
 
                 # 使用FramePacket解析buffer
-                frame = FramePacket(buffer_data, is_nc_mode=True)
+                frame = FramePacket(buffer_data)
 
                 # 检查条件：b_pri == 3 且 b_cmd == 4 (支架动作)
                 if frame.b_pri == 3 and frame.b_cmd == 4:
@@ -212,7 +213,21 @@ class DataProcessor:
                             filtered_batch.append((dt, frame.src_no, parsed_result))
                             # 更新该 src_no 的最新数据
                             self.last_shear_datas[frame.src_no] = frame.datas
-
+                elif frame.b_pri == 3 and frame.b_cmd == 10:
+                    # 检查是否与上一帧数据相同
+                    parsed_result = self.sen_receiver.process_packet(frame)
+                    # 过滤空数据，只保留有传感器数据的记录
+                    if (
+                        parsed_result
+                        and parsed_result.get("data")
+                        and len(parsed_result["data"]) > 0
+                    ):
+                        print(frame.src_no, parsed_result["data"])
+                        for result in parsed_result["data"]:
+                            out = parsed_result
+                            out["data"] = result
+                            # print(out)
+                            filtered_batch.append((dt, frame.src_no, out))
             except Exception:
                 # 跳过解析失败的记录
                 continue

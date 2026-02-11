@@ -14,6 +14,12 @@ const routes: RouteRecordRaw[] = [
     meta: { keepAlive: true },
   },
   {
+    path: "/sensor",
+    name: "Sensor",
+    component: () => import("@/views/SensorTrajectory.vue"),
+    meta: { keepAlive: true },
+  },
+  {
     path: "/features",
     name: "Features",
     component: () => import("@/views/FeatureAnalysis.vue"),

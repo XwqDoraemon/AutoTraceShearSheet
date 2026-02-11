@@ -6,9 +6,16 @@
 
 import json
 import os
+import sys
+
+from pandas.core.arrays.datetimelike import isin
+
+# 添加项目根目录到路径
+sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from Src import DataProcessor
 from util.action_receiver import ActionType
+from util.Enums import SensorTypeID
 from util.shear_position_receiver import ShearerDir
 
 
@@ -143,6 +150,8 @@ def export_parsed_data(db_paths, output_file):
                     serializable_data[key] = value.name
                 elif isinstance(value, ShearerDir):
                     serializable_data[key] = format_direction(value)
+                elif isinstance(value, SensorTypeID):
+                    serializable_data[key] = value.name
                 else:
                     serializable_data[key] = value
 
@@ -170,8 +179,8 @@ if __name__ == "__main__":
     # 示例2：导出多个数据库文件（合并导出）
     db_paths = [
         "Datas/乌东数据/9月4日4点班/电液控UDP驱动_20250904_14.db",
-        "Datas/乌东数据/9月4日4点班/电液控UDP驱动_20250904_16.db",  # 添加更多数据库文件
-        "Datas/乌东数据/9月4日4点班/电液控UDP驱动_20250904_18.db",  # 添加更多数据库文件
+        # "Datas/乌东数据/9月4日4点班/电液控UDP驱动_20250904_16.db",  # 添加更多数据库文件
+        # "Datas/乌东数据/9月4日4点班/电液控UDP驱动_20250904_18.db",  # 添加更多数据库文件
     ]
     output_file = "outPut/电液控数据解析导出.txt"
     export_parsed_data(db_paths, output_file)

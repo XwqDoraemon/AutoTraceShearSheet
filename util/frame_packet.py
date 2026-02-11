@@ -10,15 +10,13 @@ from typing import List, Optional
 class FramePacket:
     """数据帧包"""
 
-    def __init__(self, buffer: Optional[bytes] = None, is_nc_mode: bool = False):
+    def __init__(self, buffer: Optional[bytes] = None):
         """
         初始化数据帧包
 
         Args:
             buffer: 原始字节数据
-            is_nc_mode: 是否属于网络型私有协议
         """
-        self._is_nc_mode = is_nc_mode
 
         if buffer is None:
             # 空包初始化
@@ -31,13 +29,6 @@ class FramePacket:
             if len(self._buffer) < 24:
                 self._buffer.extend(b"\x00" * (24 - len(self._buffer)))
             self._datas = bytearray(8)
-
-            # 如果是标准帧，转换为扩展帧
-            if not self._is_nc_mode and self.b_is_extend == 0:
-                uid = self.ul_dword
-                uid <<= 18
-                self.ul_dword = uid & 0x3FFFFFFFF
-                self.b_is_extend = 1
 
     @property
     def ul_dword(self) -> int:
@@ -187,25 +178,25 @@ class FramePacket:
     @property
     def uc_tmcan_type(self) -> int:
         """模拟TMCAN帧类型"""
-        if self._is_nc_mode and len(self._buffer) > 5:
+        if len(self._buffer) > 5:
             return self._buffer[5]
         return 0
 
     @uc_tmcan_type.setter
     def uc_tmcan_type(self, value: int):
-        if self._is_nc_mode and len(self._buffer) > 5:
+        if len(self._buffer) > 5:
             self._buffer[5] = value & 0xFF
 
     @property
     def datas(self) -> bytes:
         """数据区"""
-        offset = 6 if self._is_nc_mode else 5
+        offset = 6
         data_len = self.uc_data_len
         return bytes(self._buffer[offset : offset + data_len])
 
     @datas.setter
     def datas(self, value: bytes):
-        offset = 6 if self._is_nc_mode else 5
+        offset = 6
         for i, b in enumerate(value):
             if offset + i < len(self._buffer):
                 self._buffer[offset + i] = b

@@ -21,6 +21,11 @@
             <span>散点图分析</span>
           </template>
         </el-menu-item>
+        <el-menu-item index="/sensor">
+          <template #title>
+            <span>传感器轨迹</span>
+          </template>
+        </el-menu-item>
         <el-menu-item index="/features">
           <template #title>
             <span>特征分析</span>

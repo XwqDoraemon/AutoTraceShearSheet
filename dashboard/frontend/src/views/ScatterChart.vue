@@ -575,16 +575,16 @@ const updateChart = () => {
         itemStyle: {
           color: (params: any) => {
             const dir = params.data?.direction || "";
-            if (dir.includes("Up")) return "#67C23A";
-            if (dir.includes("Down")) return "#F56C6C";
+            if (dir.includes("上行") || dir.includes("Up")) return "#67C23A";
+            if (dir.includes("下行") || dir.includes("Down")) return "#F56C6C";
             return "#909399";
           },
         },
         symbol: "triangle",
         symbolRotate: (params: any) => {
           const dir = params.data?.direction || "";
-          if (dir.includes("Up")) return 0; // 向上三角形
-          if (dir.includes("Down")) return 180; // 向下三角形（旋转180度）
+          if (dir.includes("上行") || dir.includes("Up")) return 0; // 向上三角形
+          if (dir.includes("下行") || dir.includes("Down")) return 180; // 向下三角形（旋转180度）
           return 0; // 停止 - 默认方向
         },
         symbolSize: 12,
@@ -602,21 +602,21 @@ const loadChartData = async () => {
 
     // 保存原始数据
     rawActionData = data.action_data.map((d: any) => ({
-      x: d.x,
-      y: d.y,
-      name: d.name,
+      x: d.time,
+      y: d.src_no,
+      name: `源地址${d.src_no}`,
       frame_type: d.frame_type,
       src_no: d.src_no,
       action_code: d.action_code || "",
     }));
 
     rawPositionData = data.position_data.map((d: any) => ({
-      x: d.x,
-      y: d.y,
-      name: d.name,
+      x: d.time,
+      y: d.value,
+      name: `位置${d.value}`,
       frame_type: d.frame_type,
-      position: d.position,
-      direction: d.direction,
+      position: d.value,
+      direction: d.dir || "",
     }));
 
     // 提取所有唯一的动作代码

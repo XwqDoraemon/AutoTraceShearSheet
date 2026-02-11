@@ -4,18 +4,10 @@
 处理煤机位置数据包解析和处理
 """
 
-from enum import Enum
 from typing import Dict
 
+from .Enums import ShearerDir
 from .frame_packet import FramePacket
-
-
-class ShearerDir(Enum):
-    """煤机方向枚举"""
-
-    Stop = 0  # 停止
-    Down = 1  # 下行
-    Up = 2  # 上行
 
 
 class ShearPositionReceiver:
@@ -59,7 +51,7 @@ class ShearPositionReceiver:
 
             return {
                 "frame_type": "煤机位置",
-                "data": {"dir": direction, "position": position},
+                "data": {"dir": direction, "value": position},
             }
 
         return {}
