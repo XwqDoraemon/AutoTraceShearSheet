@@ -34,11 +34,7 @@ from tqdm import tqdm
 
 # 添加项目根目录到路径
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-
-from Src.clickhouse_database import ClickHouseDataBase
-from Src.dataProcessor import DataProcessor
-from Src.spatiotemporal_heatmap import SpatiotemporalHeatmap
-from Src.txt_data_converter import TxtDataConverter
+from Src.streaming_data_loader import StreamingDataLoader
 
 
 @dataclass
@@ -124,29 +120,20 @@ class TraceSplitter:
 
     def __init__(
         self,
-        input_source: str,
-        source_type: str = "txt",
-        db_name: Optional[str] = None,
-        table_name: Optional[str] = None,
-        batch_size: int = 2000,
+        data_loader: StreamingDataLoader,
         test_mode: bool = True,
     ):
         """
         初始化分割器
 
         Args:
-            input_source: 输入源路径（文件路径或数据库连接信息）
-            source_type: 源类型，"txt", "csv", "db", "clickhouse"
-            db_name: 数据库名（用于ClickHouse）
-            table_name: 表名（用于ClickHouse）
-            batch_size: 批处理大小
+            data_loader: StreamingDataLoader实例（已初始化）
             test_mode: 测试模式，只绘制一张图后结束
         """
-        self.input_source = input_source
-        self.source_type = source_type
-        self.db_name = db_name
-        self.table_name = table_name
-        self.batch_size = batch_size
+        self.data_loader = data_loader
+        self.input_source = data_loader.source
+        self.source_type = data_loader.source_type
+        self.batch_size = data_loader.batch_size
         self.test_mode = test_mode
 
         # 数据存储
@@ -183,84 +170,24 @@ class TraceSplitter:
                 continue
 
     def load_data(self):
-        """加载数据"""
+        """加载数据（使用传入的StreamingDataLoader）"""
         print("=" * 80)
         print(f"正在加载数据: {self.input_source}")
         print("=" * 80)
 
-        if self.source_type in ["txt", "csv"]:
-            self._load_from_txt()
-        elif self.source_type == "db":
-            self._load_from_db()
-        elif self.source_type == "clickhouse":
-            self._load_from_clickhouse()
-        else:
-            raise ValueError(f"不支持的源类型: {self.source_type}")
-
-        print(f"[OK] 数据加载完成！")
-        print(f"   总数据量: {len(self.all_data):,}")
-        print(f"   煤机位置数据: {len(self.shearer_positions):,}")
-        if self.filtered_duplicate_count > 0:
-            print(f"   过滤重复位置: {self.filtered_duplicate_count:,} 条")
-
-    def _load_from_txt(self):
-        """从txt文件加载数据"""
-        converter = TxtDataConverter(self.input_source)
-
-        print("正在解析txt文件...")
-        batch_count = 0
+        # 使用传入的StreamingDataLoader加载数据
         total_processed = 0
+        batch_count = 0
 
-        for batch in converter.parse_batch(batch_size=self.batch_size):
-            batch_count += 1
-            batch_start_count = total_processed
+        for timestamp, src, parsed_data in self.data_loader.load_data():
+            batch_count += 1 if batch_count == 0 else batch_count
+            self.all_data.append((timestamp, src, parsed_data))
 
-            for timestamp, src, parsed_data in batch:
-                self.all_data.append((timestamp, src, parsed_data))
-
-                # 提取煤机位置数据
-                if parsed_data.get("frame_type") == "煤机位置":
-                    data = parsed_data.get("data", {})
-                    position = data.get("position")
-                    direction = data.get("direction")
-                    if position is not None:
-                        # 过滤重复位置值
-                        if (
-                            self.last_shearer_position is not None
-                            and position == self.last_shearer_position
-                        ):
-                            self.filtered_duplicate_count += 1
-                        else:
-                            self.shearer_positions.append(
-                                (timestamp, src, position, str(direction))
-                            )
-                            self.last_shearer_position = position
-
-            total_processed = len(self.all_data)
-            batch_end_count = total_processed
-
-            # 每10个批次打印一次进度
-            if batch_count % 10 == 0 or batch_count == 1:
-                print(
-                    f"   批次 {batch_count}: 已处理 {total_processed:,} 条数据 (本批次新增 {batch_end_count - batch_start_count:,} 条)"
-                )
-
-        print(
-            f"   [OK] txt解析完成！共 {batch_count} 个批次, {total_processed:,} 条数据"
-        )
-
-    def _load_from_db(self):
-        """从SQLite数据库加载数据"""
-        processor = DataProcessor(self.input_source)
-        print("正在从数据库读取数据...")
-        self.all_data = processor.process_data_in_batches()
-
-        # 提取煤机位置数据
-        for timestamp, src, parsed_data in self.all_data:
+            # 提取煤机位置数据
             if parsed_data.get("frame_type") == "煤机位置":
                 data = parsed_data.get("data", {})
                 position = data.get("position")
-                direction = data.get("direction")
+                direction = data.get("dir")  # 使用 "dir" 而不是 "direction"
                 if position is not None:
                     # 过滤重复位置值
                     if (
@@ -274,24 +201,17 @@ class TraceSplitter:
                         )
                         self.last_shearer_position = position
 
-    def _load_from_clickhouse(self):
-        """从ClickHouse数据库加载数据"""
-        if not self.db_name or not self.table_name:
-            raise ValueError("ClickHouse需要指定db_name和table_name")
+            total_processed = len(self.all_data)
 
-        db = ClickHouseDataBase()
-        if not db.connect():
-            raise ConnectionError("无法连接到ClickHouse数据库")
+            # 每10000条打印一次进度
+            if total_processed % 10000 == 0:
+                print(f"   已处理 {total_processed:,} 条数据")
 
-        try:
-            print(f"正在从ClickHouse读取数据: {self.db_name}.{self.table_name}")
-            # 这里简化处理，实际需要根据表结构调整查询
-            # query = f"SELECT * FROM `{self.db_name}`.`{self.table_name}` WHERE ..."
-            # result = db.execute_query(query)
-            # 转换数据格式...
-            pass
-        finally:
-            db.disconnect()
+        print(f"[OK] 数据加载完成！")
+        print(f"   总数据量: {len(self.all_data):,}")
+        print(f"   煤机位置数据: {len(self.shearer_positions):,}")
+        if self.filtered_duplicate_count > 0:
+            print(f"   过滤重复位置: {self.filtered_duplicate_count:,} 条")
 
     def _initialize_range(self):
         """初始化位置范围（处理前2000条数据）"""
@@ -374,6 +294,55 @@ class TraceSplitter:
                 return "down"
 
         return "stable"
+
+    def _find_max_after_outlier_removal(
+        self, positions: List[int], start_index: int
+    ) -> Optional[int]:
+        """
+        去除离群点后查找最大值的索引
+
+        使用 IQR (四分位距) 方法检测并去除离群点，然后找到最大值
+
+        Args:
+            positions: 位置值列表
+            start_index: 起始索引（用于返回绝对索引）
+
+        Returns:
+            最大值在原列表中的相对索引，如果无法确定则返回None
+        """
+        if len(positions) < 10:
+            # 数据点太少，直接找最大值
+            return positions.index(max(positions))
+
+        # 转换为numpy数组
+        arr = np.array(positions)
+
+        # 计算四分位数
+        q1 = np.percentile(arr, 25)
+        q3 = np.percentile(arr, 75)
+        iqr = q3 - q1
+
+        # 定义离群点边界（使用1.5倍IQR）
+        lower_bound = q1 - 1.5 * iqr
+        upper_bound = q3 + 1.5 * iqr
+
+        # 过滤离群点
+        filtered_mask = (arr >= lower_bound) & (arr <= upper_bound)
+        filtered_positions = arr[filtered_mask]
+
+        if len(filtered_positions) == 0:
+            # 所有数据都被视为离群点，返回原始最大值的索引
+            return positions.index(max(positions))
+
+        # 在过滤后的数据中找最大值
+        max_value = np.max(filtered_positions)
+
+        # 找到第一个最大值的位置（可能有多个相同的最大值）
+        for i, pos in enumerate(positions):
+            if pos == max_value and filtered_mask[i]:
+                return i
+
+        return None
 
     def _find_cycles(self):
         """检测周期 - 使用中间阈值判断周期结束"""
@@ -1194,6 +1163,8 @@ class TraceSplitter:
     def process_and_visualize(self, output_dir: str):
         """处理数据并可视化（流式处理：加载一批处理一批）
 
+        使用StreamingDataLoader统一处理所有数据源类型
+
         Yields:
             tuple: (cycle_index, cycle, output_file) 每完成一个周期就yield一次
         """
@@ -1204,32 +1175,26 @@ class TraceSplitter:
         # 创建输出目录
         os.makedirs(output_dir, exist_ok=True)
 
-        # 流式加载数据并处理
-        if self.source_type in ["txt", "csv"]:
-            yield from self._process_txt_streaming(output_dir)
-        elif self.source_type == "db":
-            yield from self._process_db_streaming(output_dir)
-        elif self.source_type == "clickhouse":
-            yield from self._process_clickhouse_streaming(output_dir)
-        else:
-            raise ValueError(f"不支持的源类型: {self.source_type}")
+        # 使用统一的流式处理方法
+        yield from self._process_streaming(output_dir)
 
         print(f"\n[OK] 处理完成！")
         print(f"   输出目录: {output_dir}")
         print(f"   共绘制 {len(self.cycles)} 张轨迹图")
 
-    def _process_txt_streaming(self, output_dir: str):
-        """流式处理txt文件数据"""
+    def _process_streaming(self, output_dir: str):
+        """统一的流式处理方法（使用传入的StreamingDataLoader）
+
+        Args:
+            output_dir: 输出目录
+
+        Yields:
+            tuple: (cycle_index, cycle, output_file) 每完成一个周期就yield一次
+        """
         print(f"正在流式加载数据: {self.input_source}")
-        print(f"   文件路径: {self.input_source}")
+        print(f"   源类型: {self.source_type}")
 
-        import os
-
-        if not os.path.exists(self.input_source):
-            print(f"   ❌ 文件不存在: {self.input_source}")
-            return
-
-        converter = TxtDataConverter(self.input_source)
+        # 初始化处理状态
         batch_count = 0
         total_processed = 0
         cycle_count = 0
@@ -1241,48 +1206,43 @@ class TraceSplitter:
         # 最小煤机位置数量阈值
         self.min_shearer_positions_threshold = 500
 
-        print(f"   开始分批读取数据（批次大小: {self.batch_size}）...")
+        print(f"   批次大小: {self.batch_size}")
         print(f"   最小煤机位置数量阈值: {self.min_shearer_positions_threshold}")
 
-        for batch in converter.parse_batch(batch_size=self.batch_size):
-            batch_count += 1
-            batch_start_count = total_processed
+        # 流式加载数据并处理（使用传入的StreamingDataLoader）
+        for timestamp, src, parsed_data in self.data_loader.load_data():
+            batch_count += 1 if batch_count == 0 else batch_count
+            self.all_data.append((timestamp, src, parsed_data))
 
-            print(f"\n批次 {batch_count}: 正在处理...")
-
-            # 处理当前批次
-            for timestamp, src, parsed_data in batch:
-                self.all_data.append((timestamp, src, parsed_data))
-
-                # 提取煤机位置数据
-                if parsed_data.get("frame_type") == "煤机位置":
-                    data = parsed_data.get("data", {})
-                    position = data.get("position")
-                    direction = data.get("dir")  # 修复：使用 "dir" 而不是 "direction"
-                    if position is not None:
-                        # 过滤重复位置值
-                        if (
-                            self.last_shearer_position is not None
-                            and position == self.last_shearer_position
-                        ):
-                            self.filtered_duplicate_count += 1
-                        else:
-                            self.shearer_positions.append(
-                                (timestamp, src, position, str(direction))
-                            )
-                            self.last_shearer_position = position
+            # 提取煤机位置数据
+            if parsed_data.get("frame_type") == "煤机位置":
+                data = parsed_data.get("data", {})
+                position = data.get("position")
+                direction = data.get("dir")
+                if position is not None:
+                    # 过滤重复位置值
+                    if (
+                        self.last_shearer_position is not None
+                        and position == self.last_shearer_position
+                    ):
+                        self.filtered_duplicate_count += 1
+                    else:
+                        self.shearer_positions.append(
+                            (timestamp, src, position, str(direction))
+                        )
+                        self.last_shearer_position = position
 
             total_processed = len(self.all_data)
-            batch_end_count = total_processed
-            batch_new_count = batch_end_count - batch_start_count
 
-            print(f"   本批次新增: {batch_new_count:,} 条")
-            print(f"   累计数据: {total_processed:,} 条")
-            print(f"   煤机位置: {len(self.shearer_positions):,} 个")
-            if self.filtered_duplicate_count > 0:
-                print(f"   过滤重复: {self.filtered_duplicate_count:,} 条")
+            # 每10000条打印一次进度
+            if total_processed % 10000 == 0:
+                print(f"\n批次处理进度:")
+                print(f"   累计数据: {total_processed:,} 条")
+                print(f"   煤机位置: {len(self.shearer_positions):,} 个")
+                if self.filtered_duplicate_count > 0:
+                    print(f"   过滤重复: {self.filtered_duplicate_count:,} 条")
 
-            # 初始化范围（当煤机位置数量达到500个或数据全部加载完成）
+            # 初始化范围（当煤机位置数量达到阈值）
             if not self.initial_batch_processed:
                 if len(self.shearer_positions) >= self.min_shearer_positions_threshold:
                     print(
@@ -1309,7 +1269,10 @@ class TraceSplitter:
                         print("\n测试模式：已绘制两张图后结束")
                         return
 
-        print(f"\n   [OK] 所有批次处理完成！共 {batch_count} 个批次")
+        print(f"\n   [OK] 所有数据处理完成！共 {total_processed:,} 条数据")
+        print(f"   煤机位置: {len(self.shearer_positions):,} 个")
+        if self.filtered_duplicate_count > 0:
+            print(f"   过滤重复: {self.filtered_duplicate_count:,} 条")
 
         # 如果所有数据处理完但还没有初始化范围，则尝试初始化
         if not self.initial_batch_processed and len(self.shearer_positions) > 0:
@@ -1338,160 +1301,6 @@ class TraceSplitter:
                 print(
                     f"   ⚠️ 煤机位置数据太少（{len(self.shearer_positions)} 个），无法分割周期"
                 )
-
-    def _process_db_streaming(self, output_dir: str):
-        """流式处理SQLite数据库数据"""
-        print(f"正在流式加载数据: {self.input_source}")
-
-        import sqlite3
-
-        conn = sqlite3.connect(self.input_source)
-        cursor = conn.cursor()
-
-        try:
-            # 获取总记录数
-            cursor.execute("SELECT COUNT(*) FROM t_sac_frame")
-            total_rows = cursor.fetchone()[0]
-            print(f"   数据库总记录数: {total_rows:,}")
-
-            batch_count = 0
-            cycle_count = 0
-            offset = 0
-
-            # 初始化范围信息
-            self.range_info = None
-            self.initial_batch_processed = False
-
-            # 初始化接收器
-            from util.action_receiver import ActionReceiver
-            from util.sensor_receiver import SensorReceiver
-            from util.shear_position_receiver import ShearPositionReceiver
-
-            action_receiver = ActionReceiver()
-            shear_position_receiver = ShearPositionReceiver()
-            sen_receiver = SensorReceiver()
-
-            while offset < total_rows:
-                batch_count += 1
-                print(f"\n批次 {batch_count}: 正在处理...")
-
-                # 从数据库读取一个批次
-                cursor.execute(
-                    """
-                    SELECT f_date_time, f_buffer
-                    FROM t_sac_frame
-                    ORDER BY f_id
-                    LIMIT ? OFFSET ?
-                """,
-                    (self.batch_size, offset),
-                )
-
-                batch_data = cursor.fetchall()
-
-                if not batch_data:
-                    break
-
-                batch_start_count = len(self.all_data)
-
-                # 处理当前批次
-                for date_time_str, buffer_data in batch_data:
-                    try:
-                        # 解析时间
-                        from datetime import datetime
-
-                        dt = datetime.strptime(date_time_str, "%Y-%m-%d %H:%M:%S.%f")
-
-                        # 使用FramePacket解析buffer
-                        from util import FramePacket
-
-                        frame = FramePacket(buffer_data)
-
-                        # 检查条件：b_pri == 3 且 b_cmd == 0 (煤机位置)
-                        if frame.b_pri == 3 and frame.b_cmd == 0:
-                            # 使用ShearPositionReceiver解析
-                            parsed_result = shear_position_receiver.process_packet(
-                                frame
-                            )
-                            if parsed_result:
-                                self.all_data.append((dt, frame.src_no, parsed_result))
-
-                                # 提取煤机位置数据
-                                data = parsed_result.get("data", {})
-                                position = data.get("position")
-                                direction = data.get("dir")
-
-                                if position is not None:
-                                    # 过滤重复位置值
-                                    if (
-                                        self.last_shearer_position is not None
-                                        and position == self.last_shearer_position
-                                    ):
-                                        self.filtered_duplicate_count += 1
-                                    else:
-                                        self.shearer_positions.append(
-                                            (dt, frame.src_no, position, str(direction))
-                                        )
-                                        self.last_shearer_position = position
-
-                        # 检查条件：b_pri == 3 且 b_cmd == 10 (传感器数据)
-                        elif frame.b_pri == 3 and frame.b_cmd == 10:
-                            parsed_result = sen_receiver.process_packet(frame)
-                            if parsed_result and parsed_result.get("data"):
-                                for result in parsed_result["data"]:
-                                    out = parsed_result.copy()
-                                    out["data"] = result
-                                    self.all_data.append((dt, frame.src_no, out))
-
-                    except Exception as e:
-                        # 跳过解析失败的记录
-                        continue
-
-                batch_end_count = len(self.all_data)
-
-                print(f"   本批次新增: {batch_end_count - batch_start_count:,} 条")
-                print(f"   累计数据: {batch_end_count:,} 条")
-                print(f"   煤机位置: {len(self.shearer_positions):,} 个")
-
-                offset += self.batch_size
-
-                # 初始化范围（当煤机位置数量达到500个）
-                if not self.initial_batch_processed:
-                    if len(self.shearer_positions) >= 500:
-                        print(f"\n   → 煤机位置数据达到 500 个，开始初始化位置范围...")
-                        self._initialize_range()
-                        self.initial_batch_processed = True
-
-                # 如果已初始化范围，尝试检测周期
-                if self.initial_batch_processed:
-                    # 检测是否有新的周期完成
-                    new_cycles = self._detect_new_cycles()
-                    for cycle in new_cycles:
-                        cycle_count += 1
-                        output_file = os.path.join(
-                            output_dir,
-                            f"cycle_{cycle_count:03d}_{cycle.start_time.strftime('%Y%m%d_%H%M%S')}.png",
-                        )
-                        self._plot_single_cycle(cycle, output_file)
-                        yield (cycle_count, cycle, output_file)
-
-                        # 测试模式：只绘制一张图
-                        if self.test_mode:
-                            print("\n测试模式：只绘制一张图后结束")
-                            return
-
-        finally:
-            conn.close()
-
-    def _process_clickhouse_streaming(self, output_dir: str):
-        """流式处理ClickHouse数据"""
-        if not self.db_name or not self.table_name:
-            raise ValueError("ClickHouse需要指定db_name和table_name")
-
-        print(f"正在流式加载数据: {self.db_name}.{self.table_name}")
-
-        # TODO: 实现ClickHouse流式读取
-        # 类似于_db_streaming的逻辑，但使用ClickHouse的分页查询
-        raise NotImplementedError("ClickHouse流式处理暂未实现")
 
     def _detect_new_cycles(self) -> List[CycleData]:
         """检测新周期（增量检测）
@@ -1604,14 +1413,18 @@ class TraceSplitter:
                         window_positions = positions_only[search_start:search_end]
 
                         if window_positions:
-                            local_max_index = search_start + window_positions.index(
-                                max(window_positions)
+                            # 去除离群点后查找最大值
+                            cleaned_max_index = self._find_max_after_outlier_removal(
+                                window_positions, search_start
                             )
-                            state["max_index"] = local_max_index
-                            state["phase"] = "seeking_second_min"
-                            print(
-                                f"   → 检测到周期最大值: 索引 {local_max_index}, 位置 {positions_only[local_max_index]}"
-                            )
+
+                            if cleaned_max_index is not None:
+                                local_max_index = cleaned_max_index
+                                state["max_index"] = local_max_index
+                                state["phase"] = "seeking_second_min"
+                                print(
+                                    f"   → 检测到周期最大值(去除离群点后): 索引 {local_max_index}, 位置 {positions_only[local_max_index]}"
+                                )
 
             elif state["phase"] == "seeking_second_min":
                 # 阶段3：寻找第二个最小值点（周期终点）
@@ -1689,29 +1502,49 @@ class TraceSplitter:
 def main():
     """主函数"""
     # 配置参数
-    input_source = "Datas/3217工作面/电液控.txt"
+    # input_source = "Datas/潞宁矿数据"
+    out_dir_name = "jiayang_31232"
     source_type = "txt"  # "txt", "csv", "db", "clickhouse"
+    batch_size = 2000  # 批处理大小
     output_dir = os.path.join(
-        os.path.dirname(os.path.dirname(__file__)), "output", "trace_cycles"
+        os.path.dirname(os.path.dirname(__file__)),
+        "output",
+        "trace_cycles",
+        out_dir_name,
     )
     test_mode = False  # 测试模式，只绘制一张图
 
     print("=" * 80)
     print("跟机轨迹分割程序")
     print("=" * 80)
-    print(f"输入源: {input_source}")
     print(f"源类型: {source_type}")
     print(f"输出目录: {output_dir}")
     print(f"测试模式: {'是' if test_mode else '否'}")
     print("=" * 80)
 
-    # 创建分割器
+    # 先创建StreamingDataLoader
+    print("步骤0: 初始化StreamingDataLoader")
+    # TXT文件示例:
+    # data_loader = StreamingDataLoader(
+    #     source="Datas/3217工作面/电液控.txt",
+    #     source_type="txt",
+    #     batch_size=batch_size,
+    # )
+    # ClickHouse示例（使用默认连接配置）:
+    data_loader = StreamingDataLoader(
+        source="clickhouse",  # 连接标识（任意字符串）
+        source_type="clickhouse",
+        batch_size=batch_size,
+        db_name="jiayang",
+        table_name="_31232",
+        send_receive_timeout=600,
+    )
+    print("1、数据加载完成")
+    # 再创建分割器（传入已初始化的StreamingDataLoader）
     splitter = TraceSplitter(
-        input_source=input_source,
-        source_type=source_type,
+        data_loader=data_loader,
         test_mode=test_mode,
     )
-
     # 处理和可视化（流式处理）
     try:
         for cycle_idx, cycle, output_file in splitter.process_and_visualize(output_dir):
@@ -1721,9 +1554,6 @@ def main():
         import traceback
 
         traceback.print_exc()
-
-    # 多线程版本（可选）
-    # splitter.process_and_visualize_multithread(output_dir, max_workers=12)
 
 
 if __name__ == "__main__":
